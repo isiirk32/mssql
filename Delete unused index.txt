@@ -1,0 +1,94 @@
+-- Имя почтового профиля, для отправки электонной почты									
+DECLARE @profilename AS NVARCHAR(100) = 'monitoring'
+-- Получатели сообщений электронной почты, разделенные знаком ";"				
+DECLARE @recipients AS NVARCHAR(500) = 'xxx@mail.ru'
+DECLARE @SQL NVARCHAR(max)
+DECLARE @finalmassage VARCHAR(max) = ''
+DECLARE @subject VARCHAR(200) = ''
+DECLARE @not BIT = 0
+
+DECLARE DBcursor CURSOR
+FOR
+(
+		SELECT
+			--	(cast((user_seeks + user_scans + user_lookups) as float) / case user_updates when 0 then 1.0 else cast(user_updates as float) end) * 100 as [%]
+			--    , (user_seeks + user_scans + user_lookups) AS total_usage
+			--    , objectname=object_name(s.object_id), s.object_id
+			--    , indexname=i.name, i.index_id
+			--    , user_seeks, user_scans, user_lookups, user_updates
+			--    , last_user_seek, last_user_scan, last_user_update
+			--    , last_system_seek, last_system_scan, last_system_update
+			--    , 'DROP INDEX ' + i.name + ' ON ' + object_name(s.object_id) as [Command]
+			[SQL] = N'DROP INDEX ' + I.[NAME] + N' ON ' + OBJECT_NAME(S.[OBJECT_ID]) + N';'
+		FROM sys.dm_db_index_usage_stats s
+			,sys.indexes i
+		WHERE database_id = db_id()
+			AND objectproperty(s.object_id, 'IsUserTable') = 1
+			AND i.object_id = s.object_id
+			AND i.index_id = s.index_id
+			AND i.name IS NOT NULL
+			AND i.is_primary_key = 0 --исключаем Primary Key
+			AND i.is_unique_constraint = 0 --исключаем Constraints
+			AND i.name LIKE 'isi%'
+			AND (
+				DATEDIFF(day, last_user_seek, GETDATE()) > 1
+				OR last_user_seek IS NULL
+				)
+			AND (
+				DATEDIFF(day, last_user_scan, GETDATE()) > 1
+				OR last_user_scan IS NULL
+				)
+		)
+
+OPEN DBcursor
+
+FETCH NEXT
+FROM DBcursor
+INTO @SQL
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+	SET @not = 1
+
+	BEGIN TRY
+		EXEC sp_executesql @SQL
+
+		SET @finalmassage = @finalmassage + 'Успешно удален индекс: ' + @SQL + CHAR(13) + CHAR(13)
+	END TRY
+
+	BEGIN CATCH
+		-- Ошбика выполнения операции
+		SET @subject = 'УДАЛЕНИЕ ИНДЕКСОВ: были ошибки при выполнении операций удаления индексов!'
+		SET @finalmassage = @finalmassage + 'ОШИБКА удаления индекса' + CHAR(13) + 'Код ошибки: ' + CAST(ERROR_NUMBER() AS NVARCHAR(10)) + CHAR(13) + 'Текст ошибки: ' + ERROR_MESSAGE() + CHAR(13) + 'Текст T-SQL: ' + CHAR(13) + @SQL + CHAR(13) + CHAR(13)
+	END CATCH;
+
+	FETCH NEXT
+	FROM DBcursor
+	INTO @SQL
+END;
+
+CLOSE DBcursor;
+
+DEALLOCATE DBcursor;
+
+-- Формируем сообщение об успешном или не успешном выполнении операций
+IF @not = 0
+	SET @subject = 'УДАЛЕНИЕ ИНДЕКСОВ: Успешно. Не требуется удаление индексов';
+ELSE IF @subject = ''
+	SET @subject = 'УДАЛЕНИЕ ИНДЕКСОВ: Успешное выполнение операций удаления индексов';
+
+-- Если задан профиль электронной почты, отправим сообщение
+PRINT N'----------------------------------------------------------'
+
+IF @profilename <> ''
+	EXEC msdb.dbo.sp_send_dbmail @profile_name = @profilename
+		,@recipients = @recipients
+		,@body = @finalmassage
+		,@subject = @subject;
+
+-- Выводим сообщение о результате
+SELECT @subject AS subject
+	,@finalmassage AS finalmassage
+GO
+
+
