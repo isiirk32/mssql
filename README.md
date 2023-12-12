@@ -1,0 +1,2 @@
+# mssql
+Scripts for mssql
